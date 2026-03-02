@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Pyodide IDE v18.1 - Cfyusec</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/dracula.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/python/python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+
+<style>
+* { box-sizing: border-box; font-family: 'Consolas', monospace !important; }
+html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #0a0a0a; position: fixed; width: 100%; }
+body { display: flex; flex-direction: column; }
+#topbar { flex: 0 0 auto; display: flex; background: #1a1a1a; padding: 6px; gap: 4px; border-bottom: 1px solid #333; }
+.btn { flex-shrink: 0; padding: 0 12px; height: 34px; border:none; background:#333; color:white; font-size:12px; border-radius:6px; cursor: pointer; font-weight: bold; }
+.btn-run { background: #28a745; }
+#tab-bar { flex: 0 0 auto; display: flex; background: #121212; overflow-x: auto; padding: 4px 4px 0 4px; gap: 2px; }
+.tab { background: #1e1e1e; padding: 8px 12px; border-radius: 6px 6px 0 0; font-size: 11px; white-space: nowrap; border: 1px solid #333; border-bottom: none; display: flex; align-items: center; color: #888; }
+.tab.active { background: #282a36; color: #50fa7b; border-bottom: 2px solid #50fa7b; }
+.screen { flex: 1 1 auto; display: none; flex-direction: column; overflow: hidden; }
+.show { display: flex; }
+.CodeMirror { flex: 1; font-size: 16px; height: 100% !important; background: #282a36 !important; }
+#runScreen { padding: 8px; background: #000; flex: 1; }
+#terminal-container { height: 100%; border: 1px solid #333; border-radius: 8px; background: #000; overflow-y: auto; cursor: text; }
+#terminal { padding: 10px; color: #50fa7b; font-size: 15px; white-space: pre-wrap; line-height: 1.4; display: inline; }
+#inline-input { background: transparent; border: none; outline: none; color: #fff; font-family: 'Consolas', monospace; font-size: 15px; padding: 0; margin: 0; width: 10px; caret-color: #50fa7b; }
+#keybar { flex: 0 0 auto; background: #1a1a1a; display: flex; overflow-x: auto; padding: 8px; border-top: 1px solid #333; }
+.keybtn { font-size: 16px; padding: 12px 18px; margin-right: 6px; background:#333; color:white; border:none; border-radius:8px; flex-shrink: 0; }
+#loader { position: fixed; inset: 0; background: #000; z-index: 9999; display: flex; justify-content: center; align-items: center; color: #50fa7b; }
+</style>
+</head>
+<body>
+
+<div id="loader"><b>Pyodide loading...</b></div>
+
+<div id="topbar">
+    <button class="btn btn-run" onclick="runCode()">▶ RUN</button>
+    <button class="btn" onclick="openFile()">Open</button>
+    <button class="btn" onclick="saveFile()">Save</button>
+    <button class="btn" onclick="showCode()">Editor</button>
+    <button class="btn" onclick="showRun()">Term</button>
+</div>
+
+<div id="tab-bar">
+    <div id="tabs-container" style="display:flex; gap:2px;"></div>
+    <div id="add-tab" onclick="addNewTab()" style="padding: 5px 15px; color: #888; cursor: pointer;">+</div>
+</div>
+
+<div id="codeScreen" class="screen show">
+    <textarea id="code"></textarea>
+    <div id="keybar"></div>
+</div>
+
+<div id="runScreen" class="screen">
+    <div id="terminal-container" onclick="focusInput()">
+        <div id="terminal"></div>
+        <input type="text" id="inline-input" style="display:none">
+    </div>
+</div>
+
+<input type="file" id="fileInput" style="display:none" accept=".py">
+
+<script>
+let pyodide;
+
+async function initPy() {
+    pyodide = await loadPyodide();
+    pyodide.runPython(`
+import sys, js
+class Logger:
+    def write(self, s): js.appendToTerminal(str(s))
+    def flush(self): pass
+sys.stdout = Logger()
+sys.stderr = Logger()
+    `);
+    document.getElementById("loader").style.display = "none";
+}
+initPy();
+
+function appendToTerminal(text) {
+    const term = document.getElementById("terminal");
+    term.innerText += text;
+    const container = document.getElementById("terminal-container");
+    container.scrollTop = container.scrollHeight;
+}
+window.appendToTerminal = appendToTerminal;
+function focusInput() {
+    const input = document.getElementById("inline-input");
+    if (input.style.display !== "none") input.focus();
+}
+
+async function getTermInput(promptText) {
+    if (promptText) appendToTerminal(promptText);
+    const input = document.getElementById("inline-input");
+    input.style.display = "inline-block";
+    input.value = ""; input.style.width = "10px"; input.focus();
+    return new Promise((resolve) => {
+        input.oninput = () => { input.style.width = ((input.value.length + 1) * 9) + "px"; };
+        input.onkeydown = (e) => {
+            if (e.key === "Enter") {
+                const val = input.value;
+                input.style.display = "none";
+                appendToTerminal(val + "\n");
+                resolve(val);
+            }
+        };
+    });
+}
+
+async function runCode() {
+    document.getElementById("terminal").innerText = "";
+    showRun();
+    const rawCode = editor.getValue();
+    
+    // FIX MAGIC: Tự động biến input() và time.sleep() thành await để không bị đơ
+    let transformedCode = rawCode
+        .replace(/input\s*\((.*?)\)/g, 'await __js_input($1)')
+        .replace(/time\.sleep\s*\((.*?)\)/g, 'await asyncio.sleep($1)');
+
+    // Thêm import asyncio vào đầu code để hỗ trợ sleep mượt
+    transformedCode = "import asyncio\n" + transformedCode;
+
+    try {
+        await pyodide.loadPackagesFromImports(rawCode);
+        pyodide.globals.set("__js_input", getTermInput);
+        await pyodide.runPythonAsync(transformedCode);
+        appendToTerminal("\n>>> Finished.");
+    } catch (err) {
+        appendToTerminal("\n[PYTHON ERROR]\n" + err.toString());
+    }
+}
+
+/* TỔ HỢP TÍNH NĂNG BỀN VỮNG */
+let tabs = JSON.parse(localStorage.getItem('cfy_v18_tabs')) || [{ id: 1, name: "main.py", content: "" }];
+let activeId = parseInt(localStorage.getItem('cfy_v18_active')) || tabs[0].id;
+
+var editor = CodeMirror.fromTextArea(document.getElementById("code"), {
+    mode: "python", theme: "dracula", lineNumbers: true, indentUnit: 4, lineWrapping: true
+});
+
+function saveLocal() {
+    const cur = tabs.find(t => t.id === activeId);
+    if (cur) cur.content = editor.getValue();
+    localStorage.setItem('cfy_v18_tabs', JSON.stringify(tabs));
+    localStorage.setItem('cfy_v18_active', activeId);
+}
+editor.on("change", saveLocal);
+
+function renderTabs() {
+    const container = document.getElementById("tabs-container"); container.innerHTML = "";
+    tabs.forEach(t => {
+        const div = document.createElement("div"); div.className = `tab ${t.id === activeId ? 'active' : ''}`;
+        div.innerHTML = `<span>${t.name}</span> <span onclick="closeTab(event, ${t.id})" style="margin-left:8px;color:#ff5555">×</span>`;
+        div.onclick = () => switchTab(t.id); container.appendChild(div);
+    });
+}
+function switchTab(id) { saveLocal(); activeId = id; const t = tabs.find(x => x.id === activeId); editor.setValue(t.content); renderTabs(); }
+function addNewTab(name = null, content = "") { let id = Date.now(); tabs.push({ id, name: name || `file_${tabs.length+1}.py`, content }); switchTab(id); }
+function closeTab(e, id) { e.stopPropagation(); if (tabs.length === 1) return; tabs = tabs.filter(t => t.id !== id); if (activeId === id) activeId = tabs[0].id; switchTab(activeId); }
+function openFile() { document.getElementById("fileInput").click(); }
+document.getElementById("fileInput").onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) { const r = new FileReader(); r.onload = (ev) => addNewTab(file.name, ev.target.result); r.readAsText(file); }
+};
+function saveFile() {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([editor.getValue()], {type:"text/plain"}));
+    a.download = tabs.find(t=>t.id===activeId).name; a.click();
+}
+function showCode() { document.getElementById("codeScreen").classList.add("show"); document.getElementById("runScreen").classList.remove("show"); setTimeout(()=>editor.refresh(),50); }
+function showRun() { document.getElementById("runScreen").classList.add("show"); document.getElementById("codeScreen").classList.remove("show"); }
+
+let keys=["Tab","(",")","[","]","{","}",":","\"","'","+","-","*","/","=","_"];
+keys.forEach(k=>{
+    let b=document.createElement("button"); b.className="keybtn"; b.innerText=k;
+    b.onclick=() => { if(k==="Tab") editor.replaceSelection("    "); else editor.replaceSelection(k); editor.focus(); };
+    document.getElementById("keybar").appendChild(b);
+});
+
+editor.setValue((tabs.find(t => t.id === activeId) || tabs[0]).content);
+renderTabs();
+</script>
+</body>
+</html>
